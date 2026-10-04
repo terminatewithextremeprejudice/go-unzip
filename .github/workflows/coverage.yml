@@ -1,0 +1,32 @@
+name: "Coverage"
+on:
+  pull_request:
+  push:
+    branches:
+      # It's important that the action also runs on merge to main
+      - main
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        # default fetch-depth is insufficent to find previous coverage notes
+        fetch-depth: 10
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version-file: "go.mod"
+        cache: false
+
+    - name: Generate coverage comment
+      id: gen_report
+      run: |
+        make test_coverage > report.txt        
+        content="$(cat report.txt)"
+        content="${content//'%'/'%25'}"
+        content="${content//$'\n'/'%0A'}"
+        content="${content//$'\r'/'%0D'}"
+        echo "::set-output name=content::$content"
