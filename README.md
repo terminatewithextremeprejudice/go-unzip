@@ -1,6 +1,6 @@
 # go-unzip
 
-[![License: MIT](https://shields.io)](https://opensource.org)
+[![License: MIT](https://img.shields.io/badge/Licence-MIT-brightgreen)](https://opensource.org/license/mit)
 
 This library provides a memory-efficient method of decompressing Zip files in chunks without the need for disk I/O.
 
