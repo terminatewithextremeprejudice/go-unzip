@@ -1,4 +1,5 @@
 # go-unzip
+![Coverage](https://img.shields.io/badge/Coverage-64.9%25-yellow)
 
 [![License: MIT](https://img.shields.io/badge/Licence-MIT-brightgreen)](https://opensource.org/license/mit)
 
