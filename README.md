@@ -20,7 +20,7 @@ The simplest way to use the library is to call the `NewReader` function which re
 zr := NewReader()
 for {
 	// read the headers preceding the actual body of the file
-	headers, err := zr.Next();
+	headers, err := zr.Next()
 	if err != nil {
 		if err != io.EOF {
 			// handle error
