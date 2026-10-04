@@ -4,7 +4,7 @@ This library provides a memory-efficient method of decompressing Zip files in ch
 
 ## Installation Instructions
 
-Add [terminatewithextremeprejudice/go-zip](https://github.com/terminatewithextremeprejudice/go-unzip) as a dependency to your project:
+Add [terminatewithextremeprejudice/go-unzip](https://github.com/terminatewithextremeprejudice/go-unzip) as a dependency to your project:
 
 ```cli
 go get github.com/terminatewithextremeprejudice/go-unzip
