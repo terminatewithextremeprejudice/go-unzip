@@ -450,7 +450,6 @@ func TestReader(t *testing.T) {
 		defer os.Remove(archive.Name())
 		
 		zipWriter := zip.NewWriter(archive)
-		//defer zipWriter.Close()
 
 		comment := strings.Repeat("1", 64<<10-1)
 		for i := 0; i < 65428; i++ {
@@ -475,6 +474,9 @@ func TestReader(t *testing.T) {
 		if err != nil {
 			t.Fatalf("invalid zip archive")
 		}
+		
+		defer f.Close()
+		
 		fileStats, _ := f.Stat()
 
 		_, err = f.Seek(-65535*2, io.SeekEnd)
@@ -494,8 +496,32 @@ func TestReader(t *testing.T) {
 			t.Fatalf("invalid zip archive")
 		}
 
-		assert.Greater(t, offset, int64(0))	
-		assert.Greater(t, size, int64(0))	
+		assert.Equal(t, offset, int64(4295021060))	
+		assert.Equal(t, size, int64(7197080))
+
+		f2, err := os.Open("z.zip")
+		if err != nil {
+			t.Fatalf("invalid zip archive")
+		}
+
+		_, err = f2.Seek(offset, io.SeekStart)
+		if err != nil {
+			t.Fatalf("invalid seek offsets")
+		}
+
+		buffer = make([]byte, size)
+		_, err = f2.Read(buffer)
+		if err != nil && err != io.EOF {
+			t.Fatalf("invalid zip archive")
+		}
+
+		reader2 := zr.ReadAt(bytes.NewReader(buffer), 0, size)
+		headers, _ := zr.Stat(reader2)
+		
+		for i, header := range headers {
+			name := fmt.Sprintf("%060x.txt", i)
+			assert.Equal(t, header.Name, name)
+		}
 	})
 
 	t.Run("should be able to read a zip file even if the data is not instantly fully available", func(t *testing.T) {
