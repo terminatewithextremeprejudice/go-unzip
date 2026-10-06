@@ -1,9 +1,5 @@
 package unzip
 
-import (
-	"archive/zip"
-)
-
 // Compression method
 const (
 	Store   uint16 = 0
@@ -14,6 +10,7 @@ var sigBytes = []byte{0x50, 0x4b}
 
 // Signatures
 const (
+	fileHeaderSignature        = 0x04034b50
 	fileHeaderDeflateSignature = 0x4034b50
 	fileHeaderEndSignature     = 0xFFFFFFFF
 	directoryHeaderSignature   = 0x2014b50
@@ -68,6 +65,3 @@ type directoryEnd struct {
 	commentLen         uint16
 	comment            string
 }
-
-// FileHeader Exposes underlying zip FileHeader struct
-type FileHeader zip.FileHeader

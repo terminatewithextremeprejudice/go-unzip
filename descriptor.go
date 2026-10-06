@@ -1,7 +1,6 @@
 package unzip
 
 import (
-	"archive/zip"
 	"bufio"
 	"bytes"
 	"encoding/binary"
@@ -14,7 +13,7 @@ type DescriptorReader struct {
 	br         *bufio.Reader
 	size       uint64
 	eof        bool
-	fileHeader *zip.FileHeader
+	fileHeader *FileHeader
 }
 
 func (r *DescriptorReader) Read(p []byte) (n int, err error) {
@@ -98,7 +97,7 @@ func (r *DescriptorReader) Read(p []byte) (n int, err error) {
 
 					break
 				}
-}
+			}
 
 			if i > dataDescriptor64Len { // Zip64
 				// Optional dataDesciptorSignature

@@ -22,6 +22,36 @@ type Reader struct {
 
 type readBuf []byte
 
+type FileHeader struct {
+	zip.FileHeader
+	headerOffset int64
+}
+
+func (f *FileHeader) DataOffset(r io.ReaderAt) (offset int64, err error) {
+	bodyOffset, err := f.findBodyOffset(r)
+	if err != nil {
+		return
+	}
+	return f.headerOffset + bodyOffset, nil
+}
+
+// findBodyOffset does the minimum work to verify the file has a header
+// and returns the file body offset.
+func (f *FileHeader) findBodyOffset(r io.ReaderAt) (int64, error) {
+	var buf [fileHeaderLen]byte
+	if _, err := r.ReadAt(buf[:], f.headerOffset); err != nil {
+		return 0, err
+	}
+	b := readBuf(buf[:])
+	if sig := b.uint32(); sig != fileHeaderSignature {
+		return 0, errors.New("zip: invalid format")
+	}
+	b = b[22:] // skip over most of the header
+	filenameLen := int(b.uint16())
+	extraLen := int(b.uint16())
+	return int64(fileHeaderLen + filenameLen + extraLen), nil
+}
+
 func (b *readBuf) uint16() uint16 {
 	v := uint16LE(*b)
 	*b = (*b)[2:]
@@ -148,13 +178,8 @@ func findDirectory64End(r io.ReaderAt, directoryEndOffset int64) (int64, error) 
 	if sig := b.uint32(); sig != directory64LocSignature {
 		return -1, nil
 	}
-	if b.uint32() != 0 { // number of the disk with the start of the zip64 end of central directory
-		return -1, nil // the file is not a valid zip64-file
-	}
-	p := b.uint64()      // relative offset of the zip64 end of central directory record
-	if b.uint32() != 1 { // total number of disks
-		return -1, nil // the file is not a valid zip64-file
-	}
+	b = b[4:]       // skip number of the disk with the start of the zip64 end of central directory
+	p := b.uint64() // relative offset of the zip64 end of central directory record
 	return int64(p), nil
 }
 
@@ -162,7 +187,7 @@ func findDirectory64End(r io.ReaderAt, directoryEndOffset int64) (int64, error) 
 // directory end with the zip64 directory end values.
 func readDirectory64End(r io.ReaderAt, offset int64, d *directoryEnd) (err error) {
 	buf := make([]byte, directory64EndLen)
-
+	
 	if _, err := r.ReadAt(buf, offset); err != nil {
 		return err
 	}
@@ -184,11 +209,7 @@ func readDirectory64End(r io.ReaderAt, offset int64, d *directoryEnd) (err error
 }
 
 // readDirectoryEnd tries to read EOCD to determine how many directory files file contains
-func readDirectoryEnd(r io.ReaderAt, size int64, offset *int64) (dir *directoryEnd, err error) {
-	if offset == nil {
-		offset = new(int64)
-	}
-
+func readDirectoryEnd(r io.ReaderAt, size int64, offset int64) (dir *directoryEnd, err error) {
 	// look for directoryEndSignature in the last 1k, then in the last 65k
 	var buf []byte
 	var directoryEndOffset int64
@@ -228,20 +249,29 @@ func readDirectoryEnd(r io.ReaderAt, size int64, offset *int64) (dir *directoryE
 	d.comment = string(b[:l])
 
 	// These values mean that the file can be a zip64 file
-	if d.directoryRecords == 0xffff || d.directorySize == 0xffff || d.directoryOffset == 0xffffffff {
+	if d.directoryRecords == 0xffff || d.directorySize == 0xffffffff || d.directoryOffset == 0xffffffff {
 		p, err := findDirectory64End(r, directoryEndOffset)
 		if err == nil && p >= 0 {
-			err = readDirectory64End(r, p-*offset, d)
+			relativeOffset := p
+			if offset < p {
+				relativeOffset = p - offset
+			}
+			err = readDirectory64End(r, relativeOffset, d)
 		}
 		if err != nil {
 			return nil, err
 		}
 	}
+
+	if o := int64(d.directoryOffset); o < 0 {
+		return nil, errors.New("zip: invalid format")
+	}
+
 	return d, nil
 }
 
 // readDirectoryHeader attempts to read directory header from reader
-func readDirectoryHeader(r *bufio.Reader) (*zip.FileHeader, error) {
+func readDirectoryHeader(r *bufio.Reader) (*FileHeader, error) {
 	var buf [directoryHeaderLen]byte
 	if _, err := io.ReadFull(r, buf[:]); err != nil {
 		return nil, err
@@ -252,7 +282,7 @@ func readDirectoryHeader(r *bufio.Reader) (*zip.FileHeader, error) {
 	}
 
 	// Read bytes into memory in little endian order
-	f := &zip.FileHeader{}
+	f := &FileHeader{}
 	f.CreatorVersion = b.uint16()
 	f.ReaderVersion = b.uint16()
 	f.Flags = b.uint16()
@@ -270,6 +300,7 @@ func readDirectoryHeader(r *bufio.Reader) (*zip.FileHeader, error) {
 
 	b = b[4:] // skipped start disk number and internal attributes (2x uint16)
 	f.ExternalAttrs = b.uint32()
+	f.headerOffset = int64(b.uint32())
 	d := make([]byte, filenameLen+extraLen+commentLen)
 	if _, err := io.ReadFull(r, d); err != nil {
 		return nil, err
@@ -295,6 +326,39 @@ func readDirectoryHeader(r *bufio.Reader) (*zip.FileHeader, error) {
 		f.NonUTF8 = f.Flags&0x800 == 0
 	}
 
+
+	if len(f.Extra) > 0 {
+		b := readBuf(f.Extra)
+		for len(b) >= 4 { // need at least tag and size
+			tag := b.uint16()
+			size := b.uint16()
+			if int(size) > len(b) {
+				return nil, errors.New("zip: invalid format")
+			}
+			eb := readBuf(b[:size])
+			switch tag {
+			case zip64ExtraId:
+				// update directory values from the zip64 extra block
+				if len(eb) >= 8 {
+					f.UncompressedSize64 = eb.uint64()
+				}
+				if len(eb) >= 8 {
+					f.CompressedSize64 = eb.uint64()
+				}
+				if len(eb) >= 8 {
+					f.headerOffset = int64(eb.uint64())
+				}
+			}
+			b = b[size:]
+		}
+
+		for _, v := range b {
+			if v != 0 {
+				return nil, errors.New("zip: invalid format")
+			}
+		}
+	}
+
 	return f, nil
 }
 
@@ -312,6 +376,20 @@ func findSignatureInBlock(b []byte) int {
 	return -1
 }
 
+func findSignature64InBlock(b []byte) int {
+	for i := len(b) - directoryEndLen; i >= 0; i-- {
+		// defined from directoryEndSignature in struct.go
+		if b[i] == 'P' && b[i+1] == 'K' && b[i+2] == 0x06 && b[i+3] == 0x06 {
+			// n is length of comment
+			n := int(b[i+directoryEndLen-2]) | int(b[i+directoryEndLen-1])<<8
+			if n+directoryEndLen+i <= len(b) {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
 func NewReader(r io.Reader) *Reader {
 	return &Reader{br: bufio.NewReaderSize(r, bufferSize)}
 }
@@ -319,7 +397,7 @@ func NewReader(r io.Reader) *Reader {
 // Next method advances to the next file in the archive and then it can be treated as an io.Reader to access the file's data.
 // io.EOF is returned when the end of the zip has been reached.
 // If Next is called again it will presume another zip file immediately follows and will advance to it.
-func (r *Reader) Next() (*zip.FileHeader, error) {
+func (r *Reader) Next() (*FileHeader, error) {
 	if r.Reader != nil {
 		if _, err := io.Copy(io.Discard, r.Reader); err != nil {
 			return nil, err
@@ -355,7 +433,7 @@ func (r *Reader) Next() (*zip.FileHeader, error) {
 
 	b := readBuf(headBuf[4:])
 	// Read bytes into memory in little endian order
-	f := &zip.FileHeader{
+	f := &FileHeader{
 		ReaderVersion:    b.uint16(),
 		Flags:            b.uint16(),
 		Method:           b.uint16(),
@@ -440,8 +518,8 @@ func (r *Reader) Next() (*zip.FileHeader, error) {
 	return f, nil
 }
 
-// DirectoryOffset reads EOCD record of the file and returns the offset and size in bytes
-func (r *Reader) DirectoryOffset(br io.ReaderAt, size int64, offset *int64) (int64, int64, error) {
+// DirectoryOffset reads EOCD record of the file and returns the offset to the EOCD record and size in bytes
+func (r *Reader) DirectoryOffset(br io.ReaderAt, size int64, offset int64) (int64, int64, error) {
 	end, err := readDirectoryEnd(br, size, offset)
 	if err != nil {
 		return 0, 0, err
@@ -457,9 +535,9 @@ func (r *Reader) ReadAt(br io.ReaderAt, start int64, end int64) *io.SectionReade
 // Stat method reads Central Directory record of the zip file and returns it's contents
 // Stat makes possible to validate Zip contents or can be used to peek the structure before
 // reading any actual files.
-func (r *Reader) Stat(br *io.SectionReader) ([]*zip.FileHeader, error) {
+func (r *Reader) Stat(br *io.SectionReader) ([]*FileHeader, error) {
 	buf := bufio.NewReader(br)
-	files := make([]*zip.FileHeader, 0)
+	files := make([]*FileHeader, 0)
 
 	for {
 		f, err := readDirectoryHeader(buf)

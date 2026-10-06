@@ -3,6 +3,7 @@ package unzip
 import (
 	"archive/zip"
 	"bytes"
+	"fmt"
 	"hash/crc32"
 	"io"
 	"os"
@@ -309,61 +310,68 @@ func TestReader(t *testing.T) {
 			i++
 		}
 	})
-
+	
 	t.Run("should be able to read ZIP64 file format", func(t *testing.T) {
-		// This piece of code generates 4GB zip file from /dev/zero
-		// that has massive file inside compressed to 4MB
-		// it has been further deflate compressed to 20kb
-		bigZip := makeZip("big.file", io.LimitReader(zeros{}, 4 * 1024 * 1024 * 1024))
-		b := bigZip
-		bigZipZip := makeZip("testdata.zip", bytes.NewReader(b))
-		w, _ := os.Create("./test_data/zip64.zip")
-		w.Write(bigZipZip)
+		// Create archive bigger than 4G
+		archive, err := os.Create("z.zip")
+		if err != nil {
+			panic(err)
+		}
+		defer archive.Close()
+		defer os.Remove("z.zip")
+		
+		zipWriter := zip.NewWriter(archive)
 
-		f, _ := os.Open("./test_data/zip64.zip")
-		b, _ = io.ReadAll(f)
-		zr2, _ := zip.NewReader(bytes.NewReader(b), int64(len(b)))
-
-		for _, f := range zr2.File {
-			fr, _ := f.Open()
-			zr := NewReader(fr)
-
-			for {
-				headers, err := zr.Next()
-
-				if err != nil {
-					if err != io.EOF {
-
-					}
-
-					break
-				}
-
-				// Validate CRC32 Signature
-				crc := &CRCReader{
-					Hash: crc32.NewIEEE(),
-					Crc:  &headers.CRC32,
-				}
-
-				// Decompress data if file header has compression flag set
-				dcomp := decompressor(headers.Method)
-				// If has no data descriptor, then crc is set in headers
-				if headers.Flags&0x8 == 0 {
-					crc.Crc = &headers.CRC32
-				}
-				crc.Reader = dcomp(zr)
-				n, err := io.Copy(io.Discard, crc)
-
-				comp := func(a int64, b int64) bool {
-					return a > b
-				}
-
-				// Check that more was written than what uint32 allows
-				assert.Equal(t, comp(n, uint32max), true)
+		comment := strings.Repeat("1", 64<<10-1)
+		for i := 0; i < 65428; i++ {
+			name := fmt.Sprintf("%060x.txt", i)
+			h := &zip.FileHeader{
+				Name:    name,
+				// Comment: comment,
 			}
+			fileWriter, err := zipWriter.CreateHeader(h)
+			if err != nil {
+				panic(err)
+			}
+
+			fileWriter.Write([]byte(comment))
 		}
 
-		os.Remove("./test_data/zip64.zip")
+		zipWriter.Close()
+		archive, _ = os.Open("z.zip")
+		zr := NewReader(archive)
+
+		i := 0
+		for {
+			headers, err := zr.Next()
+			if err != nil {
+				if err != io.EOF {
+					t.Fatal(err)
+				}
+
+				break
+			}
+			// Validate CRC32 Signature
+			crc := &CRCReader{
+				Hash: crc32.NewIEEE(),
+				Crc:  &headers.CRC32,
+			}
+
+			// Decompress data if file header has compression flag set
+			dcomp := decompressor(headers.Method)
+			// If has no data descriptor, then crc is set in headers
+			if headers.Flags&0x8 == 0 {
+				crc.Crc = &headers.CRC32
+			}
+			crc.Reader = dcomp(zr)
+			// Write content temporarily buffer
+			returnedBytes, _ := io.ReadAll(crc)
+
+			assert.Equal(t, len(returnedBytes), 0xffff)
+
+			i++
+		}
+
 	})
 
 	t.Run("should be able to read central directory record from part written by a zip writer", func(t *testing.T) {
@@ -400,7 +408,7 @@ func TestReader(t *testing.T) {
 		// Read bytes from offset to skip parts of single files
 		reader := bytes.NewReader(buf.Bytes()[100:])
 		zr := NewReader(buf)
-		offset, size, _ := zr.DirectoryOffset(reader, int64(buf.Len()), nil)
+		offset, size, _ := zr.DirectoryOffset(reader, int64(buf.Len()), 0)
 		reader2 := zr.ReadAt(bytes.NewReader(buf.Bytes()[offset:offset+size]), 0, size)
 		headers, _ := zr.Stat(reader2)
 
@@ -422,7 +430,7 @@ func TestReader(t *testing.T) {
 		// Read bytes from offset to skip parts of single files
 		reader := bytes.NewReader(buf.Bytes())
 		zr := NewReader(buf)
-		offset, size, _ := zr.DirectoryOffset(reader, int64(buf.Len()), nil)
+		offset, size, _ := zr.DirectoryOffset(reader, int64(buf.Len()), 0)
 		reader2 := zr.ReadAt(bytes.NewReader(buf.Bytes()[offset:offset+size]), 0, size)
 		headers, _ := zr.Stat(reader2)
 
@@ -431,6 +439,63 @@ func TestReader(t *testing.T) {
 			assert.Equal(t, header.Name, "helloworld.txt")
 			i++
 		}
+	})
+
+	t.Run("should be able to read central directory record from zip64 file", func(t *testing.T) {
+		archive, err := os.Create("z.zip")
+		if err != nil {
+			panic(err)
+		}
+		defer archive.Close()
+		defer os.Remove(archive.Name())
+		
+		zipWriter := zip.NewWriter(archive)
+		//defer zipWriter.Close()
+
+		comment := strings.Repeat("1", 64<<10-1)
+		for i := 0; i < 65428; i++ {
+			name := fmt.Sprintf("%060x.txt", i)
+			h := &zip.FileHeader{
+				Name:    name,
+				// Comment: comment,
+			}
+			fileWriter, err := zipWriter.CreateHeader(h)
+			if err != nil {
+				panic(err)
+			}
+
+			fileWriter.Write([]byte(comment))
+		}
+
+
+		zipWriter.Close()
+		buffer := make([]byte, 65535*2)
+
+		f, err := os.Open("z.zip")
+		if err != nil {
+			t.Fatalf("invalid zip archive")
+		}
+		fileStats, _ := f.Stat()
+
+		_, err = f.Seek(-65535*2, io.SeekEnd)
+		if err != nil {
+			t.Fatalf("invalid zip archive")
+		}
+
+		_, err = f.Read(buffer)
+		if err != nil && err != io.EOF {
+			t.Fatalf("invalid zip archive")
+		}
+
+		reader := bytes.NewReader(buffer)
+		zr := NewReader(reader)
+		offset, size, err := zr.DirectoryOffset(reader, int64(len(buffer)), fileStats.Size()-65535*2)
+		if err != nil {
+			t.Fatalf("invalid zip archive")
+		}
+
+		assert.Greater(t, offset, int64(0))	
+		assert.Greater(t, size, int64(0))	
 	})
 
 	t.Run("should be able to read a zip file even if the data is not instantly fully available", func(t *testing.T) {
