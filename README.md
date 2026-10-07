@@ -19,7 +19,7 @@ The simplest way to use the library is to call the `NewReader` function which re
 
 ```go
 // Unpack the stream
-zr := NewReader()
+zr := NewReader(reader)
 for {
 	// read the headers preceding the actual body of the file
 	headers, err := zr.Next()
